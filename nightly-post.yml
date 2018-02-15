@@ -102,7 +102,7 @@
     -
       name: "Copy required variables to file for further use"
       local_action:
-        shell echo "{{ item }}" >> ../"{{ pipeline_variables_filename }}"
+        shell echo "{{ item }}" >> "{{ pipeline_variables_filename }}"
       with_items:
         - 'env.MBAAS_SERVICE_KEY=\"{{ mbaas_key }}\"'
         - 'env.CORE_USERNAME=\"{{ user }}\"'

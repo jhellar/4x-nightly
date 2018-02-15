@@ -1,0 +1,92 @@
+---
+
+# Playbook which removes previously installed RHMAP Core and MbaaS and downloads templates
+
+- name: "Clean up of existing projects"
+  hosts: master
+  roles:
+    - login
+  tasks:
+    -
+      name: "List RHMAP Environments on OpenShift cluster"
+      shell: "oc get projects | awk '{print $1}' | grep rhmap-rhmap-"
+      register: listed_environments
+      ignore_errors: true
+
+    -
+      name: "Delete RHMAP Environments if some exist"
+      command: "oc delete project {{ item }}"
+      register: output
+      when: listed_environments.stdout
+      with_items: "{{ listed_environments.stdout_lines }}"
+      ignore_errors: true
+
+    -
+      name: "Delete existing RHMAP Core project in OpenShift"
+      command: "oc delete project {{ core_project_name }}"
+      register: output
+      ignore_errors: true
+
+    -
+      name: "Delete existing RHMAP MBaaS project in OpenShift"
+      command: "oc delete project {{ mbaas_project_name }}"
+      register: output
+      ignore_errors: true
+
+    -
+      name: "Delete existing RHMAP user data project in OpenShift"
+      command: "oc delete project rhmap-user-data"
+      register: output
+      ignore_errors: true
+
+    -
+      name: "Pause to release pvc"
+      pause:
+        minutes: 1
+
+    -
+      name: "Clean previously created secrets/repos if they already exist"
+      file:
+        state: absent
+        path: "{{ item }}"
+      with_items:
+        - "{{ core_templates_dir }}"
+        - "{{ mbaas_templates_dir }}"
+
+- name: "Prepare templates"
+  hosts: master
+  tasks:
+    -
+      set_fact:
+        git_host: "git-proxied"
+      when: proxy_url is defined
+
+    -
+      name: "Clone Core templates from Git repo"
+      git: repo="{{ git_host | default('git@github.com') }}:{{ core_templates_git_path }}"
+            version="{{ core_templates_git_ref | default('master') }}"
+            key_file="{{ ssh_keyfile_location }}"
+            dest="{{ core_templates_dir }}"
+            accept_hostkey=True
+            force=yes
+            update=no
+
+
+    -
+      name: "Clone MBaaS templates from Git repo"
+      git: repo="{{ git_host | default('git@github.com') }}:{{ mbaas_templates_git_path }}"
+            version="{{ mbaas_templates_git_ref | default('master') }}"
+            key_file="{{ ssh_keyfile_location }}"
+            dest="{{ mbaas_templates_dir }}"
+            accept_hostkey=True
+            force=yes
+            update=no
+
+    -
+      name: "Copy anyuid-scc template if it exists"
+      copy:
+        src: "{{ core_templates_dir }}/gitlab-shell/scc-anyuid-with-chroot.json"
+        dest: "{{ core_templates_dir }}/generated/scc-anyuid-with-chroot.json"
+        remote_src: true
+      register: file_result
+      ignore_errors: true

@@ -1,0 +1,110 @@
+---
+
+# Playbook for MBaaS Target & Environment setup
+
+- name: "MBaaS Target & Environment setup"
+  hosts: master
+  roles:
+    - login
+  tasks:
+    - name: Get RHMAP Core studio URL
+      command: oc get route rhmap --template={% raw %}"{{ .spec.host }}"{% endraw %} -n {{ core_project_name | default('rhmap-core') }}
+      register: output
+
+    - set_fact:
+        studio_url: "{{ output.stdout }}"
+
+    - name: "Get RHMAP Core admin username"
+      shell: "oc env dc/millicore --list --all -n {{ core_project_name }} | grep 'FH_ADMIN_USER_NAME' | cut -d'=' -f2"
+      register: output
+
+    - set_fact:
+        user: "{{ output.stdout }}"
+
+    - name: "Get RHMAP Core admin password"
+      shell: "oc env dc/millicore --list --all -n {{ core_project_name }} | grep 'FH_ADMIN_USER_PASSWORD' | cut -d'=' -f2"
+      register: output
+
+    - set_fact:
+        password: "{{ output.stdout }}"
+
+    -
+      name: "Get the MBaaS service key"
+      shell: "oc env dc/fh-mbaas --list --all -n {{ mbaas_project_name }} | grep 'FHMBAAS_KEY' | cut -d'=' -f2"
+      register: output
+
+    - set_fact:
+        mbaas_key: "{{ output.stdout }}"
+
+    -
+      debug:
+        msg: "Studio password for {{ user }} is {{ password }}"
+
+
+    -
+      name: "Authenticate to the RHMAP cluster"
+      uri:
+        url: "https://{{ studio_url }}/box/srv/1.1/act/sys/auth/login"
+        method: POST
+        body: '{"u":"{{ user }}","p":"{{ password }}"}'
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        validate_certs: no
+      register: login
+      failed_when: login.json.responses.local.status != 'ok'
+
+    -
+      name: "Create the MBaaS target"
+      environment:
+        http_proxy: "{{ proxy_url | default('') }}"
+        https_proxy: "{{ proxy_url | default('') }}"  
+      uri:
+        url: "https://{{ studio_url }}/api/v2/mbaases"
+        method: POST
+        body: '{"fhMbaasHost":"https://mbaas-{{ mbaas_project_name | default("rhmap-3-node-mbaas") }}.{{ hostname }}","type":"openshift3","_id":"{{ mbaas_project_name }}","label":"{{ mbaas_project_name }}","url":"https://{{ hostname }}:8443","routerDNSUrl":"*.{{ hostname }}","servicekey":" {{ mbaas_key }}"}'
+        headers:
+          Content-Type: "application/json"
+          Cookie: "feedhenry={{ login.json.login }}; csrf={{ login.json.csrf }};"
+          X-CSRF-Token: "{{ login.json.csrf }}"
+        body_format: json
+        validate_certs: no
+        status_code: 200,409
+      register: create
+
+    -
+      name: "Fetch OpenShift token"
+      command: oc whoami -t
+      register: os_token
+
+    -
+      name: "Create Environments"
+      environment:
+        http_proxy: "{{ proxy_url | default('') }}"
+        https_proxy: "{{ proxy_url | default('') }}"
+      uri:
+        url: "https://{{ studio_url }}/api/v2/environments"
+        method: POST
+        body: '{"id":"{{ item.id }}","label":"{{ item.label }}","target":"{{ mbaas_project_name }}","targetType":"openshift3","token":"{{ os_token.stdout }}"}'
+        headers:
+          Content-Type: "application/json"
+          Cookie: "feedhenry={{ login.json.login }}; csrf={{ login.json.csrf }};"
+          X-CSRF-Token: "{{ login.json.csrf }}"
+        body_format: json
+        validate_certs: no
+        status_code: 200,409,500
+        register: create_env
+        failed_when: create_env.stderr != '' and 'already exists' not in create_env.stderr
+      with_items:
+        - { id: 'dev', label: 'Development' }
+        - { id: 'live', label: 'Live' }
+
+    -
+      name: "Copy required variables to file for further use"
+      local_action:
+        shell echo "{{ item }}" >> ../"{{ pipeline_variables_filename }}"
+      with_items:
+        - 'env.MBAAS_SERVICE_KEY=\"{{ mbaas_key }}\"'
+        - 'env.CORE_USERNAME=\"{{ user }}\"'
+        - 'env.CORE_PASSWORD=\"{{ password }}\"'
+      when: pipeline_variables_filename is defined
